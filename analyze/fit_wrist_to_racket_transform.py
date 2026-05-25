@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fit a fixed hand-to-racket-tip transform from reference body positions."""
+"""Fit a fixed hand-to-racket-tip transform from reference hand states."""
 
 from __future__ import annotations
 
@@ -17,6 +17,34 @@ def load_reference(path: Path) -> tuple[str, np.ndarray, np.ndarray]:
     tip = np.asarray(data["reference_racket_tip_phc_world"], dtype=np.float64)
     body = np.asarray(data["reference_body_pos"], dtype=np.float64)
     return seq, tip, body
+
+
+def load_hand_state(path: Path, sequence: str) -> tuple[np.ndarray, np.ndarray]:
+    data = np.load(path, allow_pickle=True)
+    seq = str(data["sequence"].item())
+    if seq != sequence:
+        raise ValueError(f"hand-state sequence mismatch: expected {sequence}, got {seq}")
+    hand_pos = np.asarray(data["reference_hand_position_world"], dtype=np.float64)
+    quat = np.asarray(data["reference_hand_orientation_world_quat"], dtype=np.float64)
+    if quat.size == 0:
+        raise ValueError(f"{path} does not contain true reference hand quaternions")
+    return hand_pos, quat
+
+
+def quat_xyzw_to_matrix(q: np.ndarray) -> np.ndarray:
+    q = q / np.maximum(np.linalg.norm(q, axis=-1, keepdims=True), 1e-8)
+    x, y, z, w = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return np.stack(
+        [
+            np.stack([1 - 2 * (yy + zz), 2 * (xy - wz), 2 * (xz + wy)], axis=-1),
+            np.stack([2 * (xy + wz), 1 - 2 * (xx + zz), 2 * (yz - wx)], axis=-1),
+            np.stack([2 * (xz - wy), 2 * (yz + wx), 1 - 2 * (xx + yy)], axis=-1),
+        ],
+        axis=-2,
+    )
 
 
 def normalize(v: np.ndarray) -> np.ndarray:
@@ -38,13 +66,23 @@ def hand_frames(body: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return hand, rot
 
 
-def local_offsets(tips: np.ndarray, body: np.ndarray) -> np.ndarray:
-    hand, rot = hand_frames(body)
+def local_offsets(tips: np.ndarray, body: np.ndarray, hand_state: tuple[np.ndarray, np.ndarray] | None) -> np.ndarray:
+    if hand_state is None:
+        hand, rot = hand_frames(body)
+    else:
+        hand, quat = hand_state
+        rot = quat_xyzw_to_matrix(quat)
+        n = min(len(tips), len(hand), len(rot))
+        tips, hand, rot = tips[:n], hand[:n], rot[:n]
     return np.einsum("tji,tj->ti", rot, tips - hand)
 
 
-def reconstruct(body: np.ndarray, local: np.ndarray) -> np.ndarray:
-    hand, rot = hand_frames(body)
+def reconstruct(body: np.ndarray, local: np.ndarray, hand_state: tuple[np.ndarray, np.ndarray] | None) -> np.ndarray:
+    if hand_state is None:
+        hand, rot = hand_frames(body)
+    else:
+        hand, quat = hand_state
+        rot = quat_xyzw_to_matrix(quat)
     return hand + np.einsum("tij,j->ti", rot, local)
 
 
@@ -60,6 +98,7 @@ def error_stats(err: np.ndarray) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--reference_npz", nargs="+", required=True, type=Path)
+    parser.add_argument("--hand_state_npz", nargs="+", default=None, type=Path)
     parser.add_argument("--output_transform", required=True, type=Path)
     parser.add_argument("--output_csv", required=True, type=Path)
     parser.add_argument("--output_report", required=True, type=Path)
@@ -68,6 +107,12 @@ def main() -> None:
     args = parser.parse_args()
 
     clips = [load_reference(p) for p in args.reference_npz]
+    hand_states = {}
+    if args.hand_state_npz:
+        for path in args.hand_state_npz:
+            data = np.load(path, allow_pickle=True)
+            seq = str(data["sequence"].item())
+            hand_states[seq] = load_hand_state(path, seq)
     rows = []
     all_pass = True
     for val_idx, (val_seq, val_tip, val_body) in enumerate(clips):
@@ -76,11 +121,12 @@ def main() -> None:
         for i, (seq, tip, body) in enumerate(clips):
             if i == val_idx:
                 continue
-            train_offsets.append(local_offsets(tip, body))
+            train_offsets.append(local_offsets(tip, body, hand_states.get(seq)))
             train_names.append(seq)
         local = np.concatenate(train_offsets, axis=0).mean(axis=0)
-        pred = reconstruct(val_body, local)
-        err = np.linalg.norm(pred - val_tip, axis=1)
+        pred = reconstruct(val_body, local, hand_states.get(val_seq))
+        n = min(len(pred), len(val_tip))
+        err = np.linalg.norm(pred[:n] - val_tip[:n], axis=1)
         stats = error_stats(err)
         passed = stats["mean"] <= args.pass_mean_threshold and stats["p90"] <= args.pass_p90_threshold
         all_pass = all_pass and passed
@@ -98,10 +144,11 @@ def main() -> None:
             "passed": passed,
         })
 
-    all_offsets = np.concatenate([local_offsets(tip, body) for _, tip, body in clips], axis=0)
+    all_offsets = np.concatenate([local_offsets(tip, body, hand_states.get(seq)) for seq, tip, body in clips], axis=0)
     transform = {
         "attached_body": "R_Hand",
-        "orientation_source": "geometric frame from R_Elbow, R_Wrist, R_Hand positions; not simulator quaternion",
+        "orientation_source": "true PHC R_Hand quaternion from rollout diagnostic" if hand_states else "geometric frame from R_Elbow, R_Wrist, R_Hand positions; not simulator quaternion",
+        "quaternion_convention": "xyzw",
         "local_tip_offset": all_offsets.mean(axis=0).tolist(),
         "local_tip_offset_std": all_offsets.std(axis=0).tolist(),
         "calibration_passed": all_pass,
@@ -124,7 +171,7 @@ def main() -> None:
         "# Wrist-To-Racket Transform Calibration",
         "",
         f"- Attached body: `R_Hand`",
-        "- Orientation source: geometric frame from `R_Elbow`, `R_Wrist`, `R_Hand` positions.",
+        f"- Orientation source: `{transform['orientation_source']}`.",
         f"- Calibration passed: {all_pass}",
         "",
         "| validation clip | mean | p90 | max | passed |",
