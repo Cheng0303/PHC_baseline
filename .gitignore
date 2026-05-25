@@ -1,0 +1,46 @@
+# Keep this repository Python-only by default.
+*
+!*/
+!*.py
+!.gitignore
+
+# Python generated files.
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environments and dependency builds.
+envs/
+third_party/
+torch_extensions/
+.venv/
+venv/
+conda/
+
+# PHC / Isaac Gym experiment artifacts.
+converted/
+input/
+videos/
+reports/
+logs/
+*.pkl
+*.joblib
+*.npz
+*.npy
+*.pt
+*.pth
+*.mp4
+*.json
+*.csv
+*.md
+*.txt
+*.log
+*.tar.gz
+*.zip
+core
+core.*
+
+# Local editor / OS noise.
+.DS_Store
+.vscode/
+.idea/
