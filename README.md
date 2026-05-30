@@ -1,16 +1,124 @@
-# PHC Badminton Body-Imitation Baseline
+# PHC Badminton Body-Imitation And Virtual Racket Baseline
 
-This workspace is an isolated PHC body-imitation baseline. It does not modify
-KinTwin training code, HumEnv HDF5 conversion, V10-V12 profiles, reward logic,
-curricula, or existing checkpoints.
+This workspace tracks the badminton PHC body-imitation baseline plus the
+separate no-physics virtual-racket head experiments. Historical notes below are
+kept for provenance; the current status is summarized first.
+
+## Current Status As Of 2026-05-30
+
+Core representation:
+
+- `racket_pose` is a source-side time-varying racket control signal, not a
+  world-space racket tip.
+- Fixed passive hand-mounted racket attachment was rejected.
+- Dynamic reference replay passed.
+- Live Goal V2 is the live controller target:
+  - target and realized feedback are both in current simulated-root
+    heading-local coordinates.
+  - Goal V1 remains reference-root-local diagnostic/reference data only.
+- The virtual racket is no-physics: no mass, inertia, collision, shuttle, or
+  hitting/contact reward.
+
+Frozen body and virtual head contracts:
+
+- Confirmed frozen PHC body checkpoint:
+  `humenv/data_preparation/PHC/output/HumanoidIm/phc_comp_3/Humanoid.pth`
+- Confirmed body policy contract: original body observation `[934]` -> frozen
+  MCP body action `[3]`; saved Hydra config uses `env.num_prim=3`.
+- Stage 1A Model B racket head contract: Live Goal V2 `[9]` + realized feedback
+  V2 `[6]` -> virtual racket action `[6]`.
+- Stage 1B virtual env boundary: body `[3]` + racket `[6]` -> combined action
+  `[9]`.
+- The older `[4]+[6]=[10]` action shape came from smoke/default configs and is
+  not the confirmed pretrained body checkpoint contract.
+
+Validated stages:
+
+- Stage 1A executed the first and only training so far: separate virtual racket
+  head supervised oracle-action warm start. Original PHC body weights were not
+  loaded for training and were not modified.
+- Stage 1B corrected full held-out integration passed in no-physics scope:
+  - held-out groups: `241217_2`, `241226_1`
+  - clips / frames: `40 / 9833`
+  - modes: `body_only`, `virtual_null`, `virtual_goal_only`,
+    `virtual_goal_state`, `virtual_oracle`
+  - body parity passed with max root-trace diff `0.0`
+  - Model B no-physics virtual tracking: tip mean about `0.015254 m`, axis mean
+    about `0.963681 deg`
+  - oracle no-physics virtual tracking: tip mean about `0.004530 m`, axis mean
+    about `0.169190 deg`
+
+Current blocker:
+
+- Stage 1C hand/wrist diagnostic is still provenance-limited.
+- Existing `*.kintwin_trace.npz` files reproduce large hand/wrist diagnostics,
+  but the initial saved traces lacked full body/ref/root/timing/body-name
+  metadata needed for exact official MPJPE/root/heading/body-index validation.
+- Do not treat the `~2.20 m` hand/wrist RMSE as confirmed frozen-body hand
+  failure until the validity-trace audit resolves it.
+- Do not design a hand/body coupling objective or reward based on that number
+  yet.
+
+Strict scope:
+
+- No PPO/RL or reward-based tuning has been run for the racket task.
+- No PHC body actor fine-tuning has been run.
+- No physical racket, shuttle, collision, mass/inertia, or hitting reward has
+  been added.
+- Results here are not physical racket accuracy and not official PHC rollout
+  racket accuracy.
+
+## Current User-Run Commands
+
+Stage 1B validity-trace regeneration plus Stage 1C CPU re-audit:
+
+```bash
+cd /train-data-1-hdd/guancheng/badminton_dataset
+./phc_baseline/analyze/frozen_body_virtual_racket_stage1b/run_user_validity_trace_regen_and_audit.sh
+```
+
+Expected trace counts after a complete run:
+
+- `*.validity_trace.npz`: `200`
+- `*.kintwin_trace.npz`: `160`
+
+If the run stops before completion, inspect:
+
+```bash
+tail -120 /tmp/stage1b_validity_trace_regen.log
+find phc_baseline/reports/racket_calibration/frozen_body_head_integration/full_heldout_eval/children -name '*.validity_trace.npz' -type f | wc -l
+find phc_baseline/reports/racket_calibration/frozen_body_head_integration/full_heldout_eval/children -name '*.json' -type f | wc -l
+```
+
+CPU-only Stage 1C audit from saved traces:
+
+```bash
+cd /train-data-1-hdd/guancheng/badminton_dataset
+phc_baseline/envs/phc_isaac/bin/python \
+  phc_baseline/analyze/frozen_body_virtual_racket_stage1b/audit_hand_wrist_metric_validity.py
+```
+
+Key current reports:
+
+- `phc_baseline/reports/racket_calibration/phc_calibrated_racket_trajectory_report_v2.md`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/stage1b_evaluation_report.md`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/kintwin_style_tracking_metric_audit.md`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/hand_wrist_metric_validity_conclusion.md`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/same_run_body_metric_reproduction_report.md`
+
+## Historical Body-Only Baseline Notes
+
+The original body-imitation baseline goal was:
 
 ## Goal
 
 Raw badminton SMPL motion -> PHC official motion format -> official PHC
 pretrained SMPL humanoid inference -> videos and basic evaluation.
 
-Current status: PHC/Isaac Gym Python-side installation is complete, but PHC is
-still blocked before rollout because no CUDA GPU is visible from this session.
+Historical status at that early gate: PHC/Isaac Gym Python-side installation
+was complete in the Codex sandbox, but rollout was blocked there because no CUDA
+GPU was visible. The user's actual execution environment can see NVIDIA GPUs and
+has since run the Stage 1B smoke/full evaluation commands above.
 
 ## PHC Source
 
