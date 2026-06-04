@@ -594,10 +594,18 @@ def write_reports(payloads: dict[str, Any]) -> None:
     )
 
     write_json(REPORT_DIR / "same_run_body_metric_reproduction_summary.json", same)
+    exact_note = (
+        "Exact official MPJPE/root-error reproduction from saved validity traces passed. "
+        f"Frame-weighted body-only MPJPE/root error recomputed from NPZ = "
+        f"`{same.get('same_run_body_only_exact_trace_mpjpe_m'):.6f}` m / "
+        f"`{same.get('same_run_body_only_exact_trace_root_error_m'):.6f}` m.\n\n"
+        if same.get("exact_official_mpjpe_reproduction_from_saved_npz")
+        else "Exact official MPJPE reproduction from saved NPZ traces is blocked because full body/ref arrays were not saved in the corrected run.\n\n"
+    )
     (REPORT_DIR / "same_run_body_metric_reproduction_report.md").write_text(
         "# Same-Run Body Metric Reproduction Report\n\n"
-        "Exact official MPJPE reproduction from saved NPZ traces is blocked because full body/ref arrays were not saved in the corrected run.\n\n"
-        "The Stage 1B evaluator child JSONs do contain same-run body metric aggregates. "
+        + exact_note
+        + "The Stage 1B evaluator child JSONs contain same-run body metric aggregates. "
         f"Frame-weighted body-only MPJPE is `{same['same_run_body_only_frame_weighted_mpjpe_m']:.6f}` m and "
         f"root error is `{same['same_run_body_only_frame_weighted_root_error_m']:.6f}` m.\n\n"
         "This is not close to the earlier global PHC baseline summary `0.073808 m`, so the earlier aggregate cannot be used as a direct contradiction "
@@ -608,11 +616,15 @@ def write_reports(payloads: dict[str, Any]) -> None:
     write_json(REPORT_DIR / "hand_wrist_alignment_hypothesis_tests_summary.json", hypo)
     (REPORT_DIR / "hand_wrist_alignment_hypothesis_tests_report.md").write_text(
         "# Hand/Wrist Alignment Hypothesis Tests\n\n"
-        f"Mode invariance passed: `{hypo['mode_invariance']['passed']}`; max diffs: `{hypo['mode_invariance']['max_abs_diff_by_field']}`.\n\n"
-        f"Validity-trace alignment status: `{hypo['validity_trace_alignment_tests']['status']}`.\n\n"
-        "Root-aligned and heading-local tests are blocked by missing root/reference/root-rotation fields in the current saved traces when the status above is blocked.\n\n"
-        f"Timing shift best offsets: `{hypo['timing_shift_tests_best_offsets']}`.\n\n"
-        "No fixed attachment assumption is introduced here. Dynamic relation MSE is evaluated only after checking provenance.\n",
+        + f"Mode invariance passed: `{hypo['mode_invariance']['passed']}`; max diffs: `{hypo['mode_invariance']['max_abs_diff_by_field']}`.\n\n"
+        + f"Validity-trace alignment status: `{hypo['validity_trace_alignment_tests']['status']}`.\n\n"
+        + (
+            "Root-aligned and heading-local tests were computed from the saved validity traces.\n\n"
+            if hypo["validity_trace_alignment_tests"]["status"] == "computed_from_validity_trace"
+            else "Root-aligned and heading-local tests are blocked by missing root/reference/root-rotation fields in the current saved traces.\n\n"
+        )
+        + f"Timing shift best offsets: `{hypo['timing_shift_tests_best_offsets']}`.\n\n"
+        + "No fixed attachment assumption is introduced here. Dynamic relation MSE is evaluated only after checking provenance.\n",
         encoding="utf-8",
     )
 
@@ -651,17 +663,41 @@ def main() -> int:
             segment_ref_chunks.append(np.linalg.norm(trace["r_hand_ref_world"] - trace["r_wrist_ref_world"], axis=-1))
     segment_sim = np.concatenate(segment_sim_chunks) if segment_sim_chunks else np.empty((0,))
     segment_ref = np.concatenate(segment_ref_chunks) if segment_ref_chunks else np.empty((0,))
+    validity_names: list[str] = []
+    validity_hand_idx = None
+    validity_wrist_idx = None
+    for row in rows:
+        validity = load_trace(row["child"].get("validity_trace_path"))
+        if validity and "body_names" in validity:
+            validity_names = [
+                x.decode("utf-8") if isinstance(x, bytes) else str(x)
+                for x in validity["body_names"]
+            ]
+            if "R_Hand" in validity_names:
+                validity_hand_idx = validity_names.index("R_Hand")
+            if "R_Wrist" in validity_names:
+                validity_wrist_idx = validity_names.index("R_Wrist")
+            break
+    mapping_verified = validity_hand_idx is not None and validity_wrist_idx is not None
     mapping = {
-        "status": "partially_verified_by_evaluator_code_and_body_name_convention_but_not_fully_independent_from_saved_trace_metadata",
+        "status": "verified_from_validity_trace_body_names_and_evaluator_by_name_indexing"
+        if mapping_verified
+        else "partially_verified_by_evaluator_code_and_body_name_convention_but_not_fully_independent_from_saved_trace_metadata",
         "stage1b_metric_code": "evaluate.py selects R_Hand/R_Wrist by name from task._body_names/body_names, then indexes both task._rigid_body_pos and motionlib rg_pos with the same index.",
         "smpl_mujoco_name_indices": {"R_Wrist": SMPL_MUJOCO_NAMES.index("R_Wrist"), "R_Hand": SMPL_MUJOCO_NAMES.index("R_Hand")},
-        "nearby_limb_positions_available_in_current_trace": ["R_Wrist", "R_Hand"],
-        "nearby_limb_positions_missing": ["R_Elbow", "R_Shoulder", "full body positions"],
+        "validity_trace_body_names": validity_names,
+        "validity_trace_indices": {"R_Wrist": validity_wrist_idx, "R_Hand": validity_hand_idx},
+        "nearby_limb_positions_available_in_current_trace": ["R_Wrist", "R_Hand", "full body positions"]
+        if mapping_verified
+        else ["R_Wrist", "R_Hand"],
+        "nearby_limb_positions_missing": [] if mapping_verified else ["R_Elbow", "R_Shoulder", "full body positions"],
         "segment_length_sanity": {
             "sim_wrist_hand_segment_m": stats(segment_sim),
             "ref_wrist_hand_segment_m": stats(segment_ref),
         },
-        "remaining_mapping_risk": "current traces do not store body_names, hand/wrist indices, or full adjacent limb arrays; future validity traces should store those fields.",
+        "remaining_mapping_risk": None
+        if mapping_verified
+        else "current traces do not store body_names, hand/wrist indices, or full adjacent limb arrays; future validity traces should store those fields.",
     }
 
     timing_best = {
@@ -683,26 +719,52 @@ def main() -> int:
     }
     same_mpjpe = same_run["same_run_body_only_frame_weighted_mpjpe_m"]
     same_root = same_run["same_run_body_only_frame_weighted_root_error_m"]
-    conclusion = {
-        "classification": "Outcome C: insufficient/ambiguous for confirmed hand-objective design",
-        "diagnostic_bug_confirmed": False,
-        "true_frozen_body_hand_mismatch_confirmed": False,
-        "summary": (
-            "The existing kintwin traces are enough to reproduce the large hand/wrist and dynamic relation diagnostics, "
-            "and the hand/wrist arrays are mode-invariant. However, exact official MPJPE reproduction, root/heading alignment tests, "
-            "and independent body-index provenance are blocked by missing full body/ref/root/timing metadata. The Stage 1B same-run "
-            f"body metrics already report large frame-weighted MPJPE/root error ({same_mpjpe:.6f} m / {same_root:.6f} m), so the older "
-            "0.073808 m global baseline cannot be used as a same-run contradiction."
-        ),
-        "section_s_status": "soften interpretation: corrected Stage 1B passed, but hand/wrist diagnostic validity audit remains pending before coupling objective design.",
-        "user_run_trace_regeneration_needed": True,
-        "next_gate": "rerun the same Stage 1B evaluation with save_hand_wrist_validity_traces enabled, then rerun this CPU audit to validate exact MPJPE/root/heading/body-index provenance.",
-        "gpu_trace_regeneration_command": (
-            "cd /train-data-1-hdd/guancheng/badminton_dataset && "
-            "./phc_baseline/analyze/frozen_body_virtual_racket_stage1b/run_user_full_heldout_eval.sh && "
-            "phc_baseline/envs/phc_isaac/bin/python phc_baseline/analyze/frozen_body_virtual_racket_stage1b/audit_hand_wrist_metric_validity.py"
-        ),
-    }
+    exact_ok = bool(same_run.get("exact_official_mpjpe_reproduction_from_saved_npz"))
+    alignment_ok = validity_align["status"] == "computed_from_validity_trace"
+    timing_ok = all(
+        timing[mode]["best_hand"]["shift"] == 0 and timing[mode]["best_wrist"]["shift"] == 0
+        for mode in VIRTUAL_MODES
+    )
+    if exact_ok and alignment_ok and mapping_verified and timing_ok:
+        conclusion = {
+            "classification": "Outcome B: true held-out body hand/wrist mismatch confirmed for this corrected Stage 1B run",
+            "diagnostic_bug_confirmed": False,
+            "true_frozen_body_hand_mismatch_confirmed": True,
+            "summary": (
+                "Validity traces now contain full body/ref/root/rotation/time/body-name metadata. Exact same-run MPJPE/root-error "
+                f"reproduction passed ({same_run['same_run_body_only_exact_trace_mpjpe_m']:.6f} m / "
+                f"{same_run['same_run_body_only_exact_trace_root_error_m']:.6f} m), body-name mapping verifies R_Wrist/R_Hand, "
+                "root-aligned and heading-local checks are computed, and timing-shift tests prefer offset 0. The large hand/wrist "
+                "diagnostic is therefore not explained by a trace field, index, frame, or +/-2 frame timing bug. It is consistent "
+                "with the corrected Stage 1B frozen-body rollout itself having large same-run body/root tracking error, so the older "
+                "0.073808 m global baseline cannot be used as a same-run contradiction."
+            ),
+            "section_s_status": "update interpretation: corrected Stage 1B passed and the hand/wrist validity audit confirms a same-run frozen-body/body-tracking mismatch blocker, not a racket-head target-tracking failure.",
+            "user_run_trace_regeneration_needed": False,
+            "next_gate": "diagnose why the confirmed phc_comp_3 Stage 1B body rollout has large same-run MPJPE/root error versus the earlier global baseline before designing any hand/body coupling objective or reward.",
+            "gpu_trace_regeneration_command": None,
+        }
+    else:
+        conclusion = {
+            "classification": "Outcome C: insufficient/ambiguous for confirmed hand-objective design",
+            "diagnostic_bug_confirmed": False,
+            "true_frozen_body_hand_mismatch_confirmed": False,
+            "summary": (
+                "The existing kintwin traces are enough to reproduce the large hand/wrist and dynamic relation diagnostics, "
+                "and the hand/wrist arrays are mode-invariant. However, exact official MPJPE reproduction, root/heading alignment tests, "
+                "or independent body-index provenance are still blocked. The Stage 1B same-run "
+                f"body metrics report large frame-weighted MPJPE/root error ({same_mpjpe:.6f} m / {same_root:.6f} m), so the older "
+                "0.073808 m global baseline cannot be used as a same-run contradiction."
+            ),
+            "section_s_status": "soften interpretation: corrected Stage 1B passed, but hand/wrist diagnostic validity audit remains pending before coupling objective design.",
+            "user_run_trace_regeneration_needed": True,
+            "next_gate": "rerun the same Stage 1B evaluation with save_hand_wrist_validity_traces enabled, then rerun this CPU audit to validate exact MPJPE/root/heading/body-index provenance.",
+            "gpu_trace_regeneration_command": (
+                "cd /train-data-1-hdd/guancheng/badminton_dataset && "
+                "./phc_baseline/analyze/frozen_body_virtual_racket_stage1b/run_user_full_heldout_eval.sh && "
+                "phc_baseline/envs/phc_isaac/bin/python phc_baseline/analyze/frozen_body_virtual_racket_stage1b/audit_hand_wrist_metric_validity.py"
+            ),
+        }
 
     write_csv(REPORT_DIR / "same_run_body_metric_per_sequence.csv", per_seq_body)
     write_csv(REPORT_DIR / "hand_wrist_alignment_hypothesis_tests_per_sequence.csv", per_trace_rows)

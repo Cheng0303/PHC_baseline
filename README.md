@@ -4,7 +4,7 @@ This workspace tracks the badminton PHC body-imitation baseline plus the
 separate no-physics virtual-racket head experiments. Historical notes below are
 kept for provenance; the current status is summarized first.
 
-## Current Status As Of 2026-05-30
+## Current Status As Of 2026-06-04
 
 Core representation:
 
@@ -37,27 +37,55 @@ Validated stages:
 - Stage 1A executed the first and only training so far: separate virtual racket
   head supervised oracle-action warm start. Original PHC body weights were not
   loaded for training and were not modified.
-- Stage 1B corrected full held-out integration passed in no-physics scope:
+- Stage 1H player-compatible full held-out integration passed in no-physics
+  scope after fixing the virtual-player task facade so eval-mode writes such as
+  `cycle_motion=False` are forwarded to the underlying virtual task:
   - held-out groups: `241217_2`, `241226_1`
-  - clips / frames: `40 / 9833`
-  - modes: `body_only`, `virtual_null`, `virtual_goal_only`,
-    `virtual_goal_state`, `virtual_oracle`
-  - body parity passed with max root-trace diff `0.0`
-  - Model B no-physics virtual tracking: tip mean about `0.015254 m`, axis mean
-    about `0.963681 deg`
-  - oracle no-physics virtual tracking: tip mean about `0.004530 m`, axis mean
-    about `0.169190 deg`
+  - clips: `40`
+  - modes: `body_only_player`, `virtual_null_player`,
+    `virtual_goal_only_player`, `virtual_goal_state_player`,
+    `virtual_oracle_player`
+  - original PHC player route executed; no manual actor reconstruction
+  - augmented virtual-racket observation was not fed to the PHC body actor
+  - body parity passed with max compact metric delta vs body-only `0.0`
+  - all modes matched body-only completion and body metrics: `37 / 40`
+    completed, mean MPJPE `0.07112508077739525 m`, mean root error
+    `0.06502711607808964 m`
+  - Model B / `virtual_goal_state_player` no-physics virtual tracking:
+    tip mean `0.005546088364116688 m`, axis mean
+    `0.42426678345060576 deg`
+  - null no-physics virtual tracking: tip mean `1.6332101484273716 m`,
+    axis mean `66.34641909101572 deg`
+  - goal-only head no-physics virtual tracking: tip mean
+    `4.492306804400488 m`, axis mean `82.36579396077101 deg`
+  - oracle no-physics virtual tracking: tip mean
+    `3.014162973098239e-07 m`, axis mean
+    `0.00011354186829720696 deg`
+
+Superseded diagnostics:
+
+- Earlier Stage 1B/1C/1D reports that showed large same-run body/root or
+  hand/wrist errors were produced before the player-compatible virtual route
+  matched the original PHC player reset/cycle semantics. Stage 1H-2 isolated
+  that issue to the virtual proxy task facade: player-side eval writes were
+  applied to the facade but not to the underlying virtual task, so the virtual
+  route could keep `cycle_motion=True` at clip end.
+- After forwarding those writes and rerunning the full player-compatible
+  evaluation, body parity passed exactly. Treat the older large body/root
+  mismatch and any hand/wrist diagnostics derived from that mismatched route as
+  superseded unless they are recomputed on the final Stage 1H player-compatible
+  traces.
 
 Current blocker:
 
-- Stage 1C hand/wrist diagnostic is still provenance-limited.
-- Existing `*.kintwin_trace.npz` files reproduce large hand/wrist diagnostics,
-  but the initial saved traces lacked full body/ref/root/timing/body-name
-  metadata needed for exact official MPJPE/root/heading/body-index validation.
-- Do not treat the `~2.20 m` hand/wrist RMSE as confirmed frozen-body hand
-  failure until the validity-trace audit resolves it.
-- Do not design a hand/body coupling objective or reward based on that number
-  yet.
+- The next diagnostic should refresh hand/body consistency on the final
+  player-compatible Stage 1H route if a coupling objective is considered.
+- Do not reuse older `~2.20 m` hand/wrist RMSE tables as evidence of true
+  frozen-body hand failure; they came from a route later shown to have reset /
+  cycle-semantics mismatch.
+- Do not design a hand/body coupling objective or reward until the hand/wrist
+  diagnostic is recomputed against the final parity-passing player-compatible
+  traces.
 
 Strict scope:
 
@@ -70,41 +98,43 @@ Strict scope:
 
 ## Current User-Run Commands
 
-Stage 1B validity-trace regeneration plus Stage 1C CPU re-audit:
+Stage 1H-2 body parity diagnostic, used to verify the virtual-null route
+matches the body-only player route:
 
 ```bash
 cd /train-data-1-hdd/guancheng/badminton_dataset
-./phc_baseline/analyze/frozen_body_virtual_racket_stage1b/run_user_validity_trace_regen_and_audit.sh
+./phc_baseline/analyze/frozen_body_virtual_racket_stage1b/run_user_stage1h2_body_parity_diagnostic.sh
 ```
 
-Expected trace counts after a complete run:
+Expected current result:
 
-- `*.validity_trace.npz`: `200`
-- `*.kintwin_trace.npz`: `160`
+- `passed: true`
+- compact max delta vs body-only: `0.0`
+- body action / observation / root / body checksum diffs: `0.0`
+- done/reset diff counts: `0 / 0`
 
-If the run stops before completion, inspect:
-
-```bash
-tail -120 /tmp/stage1b_validity_trace_regen.log
-find phc_baseline/reports/racket_calibration/frozen_body_head_integration/full_heldout_eval/children -name '*.validity_trace.npz' -type f | wc -l
-find phc_baseline/reports/racket_calibration/frozen_body_head_integration/full_heldout_eval/children -name '*.json' -type f | wc -l
-```
-
-CPU-only Stage 1C audit from saved traces:
+Stage 1H player-compatible full held-out integration:
 
 ```bash
 cd /train-data-1-hdd/guancheng/badminton_dataset
-phc_baseline/envs/phc_isaac/bin/python \
-  phc_baseline/analyze/frozen_body_virtual_racket_stage1b/audit_hand_wrist_metric_validity.py
+./phc_baseline/analyze/frozen_body_virtual_racket_stage1b/run_user_stage1h_player_full_integration.sh
 ```
+
+Expected current result:
+
+- `passed: true`
+- full held-out clips: `40`
+- modes: body-only, null, goal-only, Model B / goal-state, oracle
+- body parity passed with max compact metric delta `0.0`
+- Model B tip / axis mean about `0.005546 m` / `0.424267 deg`
 
 Key current reports:
 
 - `phc_baseline/reports/racket_calibration/phc_calibrated_racket_trajectory_report_v2.md`
-- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/stage1b_evaluation_report.md`
-- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/kintwin_style_tracking_metric_audit.md`
-- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/hand_wrist_metric_validity_conclusion.md`
-- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/same_run_body_metric_reproduction_report.md`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/stage1h_player_full_integration_report.md`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/stage1h_player_full_integration_summary.json`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/stage1h_body_parity_diagnostic_report.md`
+- `phc_baseline/reports/racket_calibration/frozen_body_head_integration/stage1h_body_parity_diagnostic_summary.json`
 
 ## Historical Body-Only Baseline Notes
 
